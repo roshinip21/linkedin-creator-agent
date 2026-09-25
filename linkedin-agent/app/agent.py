@@ -12,13 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
+import json
+import uuid
 from typing import Dict, List, Optional
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.models import Gemini
+from google.cloud import storage
 from google.genai import types
 
 MODEL = "gemini-3.6-flash"
+GCS_BUCKET_NAME = "bwg3-qwiklabs-gcp-04-a0c213e22c19"
+GCP_PROJECT_ID = "qwiklabs-gcp-04-a0c213e22c19"
 
 
 def fetch_trending_topics(region: str = "bay_area", domain: str = "tech") -> List[Dict[str, str]]:
@@ -56,6 +62,55 @@ def fetch_trending_topics(region: str = "bay_area", domain: str = "tech") -> Lis
     ]
 
 
+def store_and_publish_visual_asset(
+    topic: str,
+    asset_type: str,
+    prompt_description: str,
+    content_payload: str
+) -> Dict[str, str]:
+    """Generates and stores visual layouts, slide deck specs, and metadata directly into Cloud Storage (GCS) with a public access link.
+
+    Args:
+        topic: The topic of the visual asset or post.
+        asset_type: Type of asset, e.g. 'carousel_slide_deck', 'infographic_spec', 'banner_art'.
+        prompt_description: The Nano Banana / image prompt describing the visual.
+        content_payload: Textual layout, SVG spec, or slide structure for the visual.
+
+    Returns:
+        Storage details including persistent Cloud Storage path and public URL.
+    """
+    client = storage.Client(project=GCP_PROJECT_ID)
+    bucket = client.bucket(GCS_BUCKET_NAME)
+
+    asset_id = str(uuid.uuid4())[:8]
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    filename = f"generated_content/{asset_type}_{asset_id}.json"
+
+    data = {
+        "asset_id": asset_id,
+        "created_at": timestamp,
+        "topic": topic,
+        "asset_type": asset_type,
+        "nano_banana_prompt": prompt_description,
+        "content_payload": content_payload,
+    }
+
+    blob = bucket.blob(filename)
+    blob.upload_from_string(
+        data=json.dumps(data, indent=2),
+        content_type="application/json"
+    )
+
+    return {
+        "status": "STORED",
+        "asset_id": asset_id,
+        "bucket": GCS_BUCKET_NAME,
+        "gcs_uri": f"gs://{GCS_BUCKET_NAME}/{filename}",
+        "public_url": blob.public_url,
+        "message": f"Visual asset specification successfully saved to Cloud Storage bucket '{GCS_BUCKET_NAME}'."
+    }
+
+
 def draft_post_idea(
     topic: str,
     format_type: str = "text_with_image",
@@ -78,6 +133,7 @@ def draft_post_idea(
             {"slide_number": 3, "headline": "Real-World Framework", "visual_cue": "Step 1-2-3 actionable checklist"},
             {"slide_number": 4, "headline": "Key Takeaways", "visual_cue": "Summary takeaway callout box"},
         ]
+        visual_prompt = f"Minimalist slide deck layout with bold dark typography on off-white background, infographic diagram detailing {topic}, sleek Figma design aesthetic."
         return {
             "format": "carousel",
             "topic": topic,
@@ -85,9 +141,10 @@ def draft_post_idea(
             "slides": slides,
             "call_to_action": "Which of these 3 patterns are you seeing in your team? Drop your thoughts below.",
             "hashtags": ["#TechTrends", "#BayAreaTech", "#EngineeringLeadership", "#AIStartups"],
-            "nano_banana_image_prompt": f"Minimalist slide deck layout with bold dark typography on off-white background, infographic diagram detailing {topic}, sleek Figma design aesthetic.",
+            "nano_banana_image_prompt": visual_prompt,
         }
 
+    visual_prompt = f"Editorial high-quality photograph of a modern tech founder workspace in San Francisco, soft natural morning sunlight, clean desk setup, cinematic depth of field."
     return {
         "format": "text_with_image",
         "topic": topic,
@@ -102,7 +159,7 @@ def draft_post_idea(
         ),
         "call_to_action": "Are you adjusting your 2026 roadmap around this? Let me know your perspective.",
         "hashtags": ["#BayAreaTech", "#Innovation", "#TechStrategy", "#AIStartups"],
-        "nano_banana_image_prompt": f"Editorial high-quality photograph of a modern tech founder workspace in San Francisco, soft natural morning sunlight, clean desk setup, cinematic depth of field.",
+        "nano_banana_image_prompt": visual_prompt,
     }
 
 
@@ -122,7 +179,6 @@ def draft_friend_comment(
     Returns:
         A reviewable comment draft queued for user approval before anything is posted.
     """
-    # Natural peer phrasing without em-dashes
     draft_option_1 = (
         f"Really well articulated, {friend_name}. Point #2 especially resonated with what our team ran into last month. "
         f"Curious to see how this evolves as more teams adopt it."
@@ -232,10 +288,10 @@ def monitor_bay_area_creator_events(
     ]
 
 
-SYSTEM_INSTRUCTION = """You are LinkPulse AI, a dedicated LinkedIn Creator & Network Growth Agent tailored for tech professionals in the Bay Area.
+SYSTEM_INSTRUCTION = f"""You are LinkPulse AI, a dedicated LinkedIn Creator & Network Growth Agent tailored for tech professionals in the Bay Area.
 
 Your mission is to handle 4 primary pillars:
-1. **Weekly Content Ideation**: Scan trending tech and Bay Area discussions using `fetch_trending_topics`. Draft post concepts (single posts, multi-slide carousels, or video hooks) with `draft_post_idea`. Always suggest crisp visual generation prompts tailored for Nano Banana (`gemini-3.1-flash-lite-image`).
+1. **Weekly Content Ideation & Visual Storage**: Scan trending tech and Bay Area discussions using `fetch_trending_topics`. Draft post concepts (single posts, multi-slide carousels, or video hooks) with `draft_post_idea`. Always suggest crisp visual generation prompts tailored for Nano Banana (`gemini-3.1-flash-lite-image`). When asked to generate, save, or publish visual assets or carousel specs, call `store_and_publish_visual_asset` to store them in Google Cloud Storage ('{GCS_BUCKET_NAME}') and return public URLs.
 2. **Authentic Peer Commenting with Strict Human Guardrails**: Use `draft_friend_comment` when the user wants to comment on connections' posts.
    - ABSOLUTE GUARDRAIL: Never use em-dashes ('—') in comment drafts or casual responses. Use commas, periods, or parentheses instead.
    - Never post directly; present options and explicitly ask for user approval before taking any action.
@@ -255,6 +311,7 @@ root_agent = Agent(
     tools=[
         fetch_trending_topics,
         draft_post_idea,
+        store_and_publish_visual_asset,
         draft_friend_comment,
         summarize_direct_messages,
         monitor_bay_area_creator_events,
